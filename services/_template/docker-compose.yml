@@ -1,0 +1,30 @@
+# Template for adding a new technology to InfraLab.
+#
+#   1. cp -r services/_template services/<name>
+#   2. Fill in the service below. Pin an exact image tag in .env / .env.example.
+#   3. Keep it on the shared `infra-net` network so apps on this VM reach it by name.
+#   4. If clients outside the VM need it, publish a port and advertise ${HOST_IP}
+#      (never 0.0.0.0/localhost) and add the port to the GCP VPC-internal firewall rule.
+#   5. Set mem_limit and check the memory budget in README.md.
+#   6. Add <name> to SERVICES in the Makefile.
+#   7. Run: make up SERVICE=<name>
+
+services:
+  example:
+    image: ${EXAMPLE_IMAGE:-nginx:1.27.3}
+    container_name: example
+    restart: unless-stopped
+    mem_limit: 256m
+    networks: [infra-net]
+    # ports: ["8000:80"]
+    # volumes: [example-data:/data]
+    # healthcheck:
+    #   test: ["CMD", "true"]
+    #   interval: 10s
+
+networks:
+  infra-net:
+    external: true
+
+# volumes:
+#   example-data:
