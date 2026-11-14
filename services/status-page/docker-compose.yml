@@ -1,0 +1,25 @@
+# Status page: serves the HTML that scripts/status.sh writes into ./www
+# (refreshed every 30s by the infralab-status systemd timer).
+#
+# PUBLIC: open http://<VM external IP>:8090 from any browser. That needs the
+# GCP firewall rule "infralab-status-public" (see README). Only this port is
+# public; Kafka UI and RedisInsight stay private.
+# The container has NO access to the Docker socket; it only serves one static file.
+
+services:
+  status-page:
+    image: ${STATUS_PAGE_IMAGE:-nginx:1.27.3-alpine}
+    container_name: status-page
+    restart: unless-stopped
+    mem_limit: 32m
+    networks: [infra-net]
+    ports: ["8090:80"]
+    read_only: true
+    tmpfs: [/var/cache/nginx, /run, /tmp]
+    volumes:
+      - ./www:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+networks:
+  infra-net:
+    external: true

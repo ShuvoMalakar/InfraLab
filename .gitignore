@@ -1,3 +1,5 @@
 .env
 *.log
 .DS_Store
+services/status-page/www/index.html
+services/status-page/www/*.tmp

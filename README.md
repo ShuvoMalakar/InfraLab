@@ -8,6 +8,7 @@ Shared infrastructure that runs on one GCP Ubuntu VM in Docker. Your other proje
 | Kafka (KRaft) | 3 nodes, each both broker and controller; RF=3, min.insync=2 | 9092–9094 (external), 29092 (internal) |
 | RedisInsight | web UI | 5540 |
 | Kafka UI (kafbat) | web UI | 8080 |
+| Status page | what's up: **public**, read-only, any browser | 8090 |
 
 > This is a lab setup. All nodes share one VM, so you get real Redis sharding and Kafka replication/failover between nodes, but nothing survives the VM itself going down.
 
@@ -123,16 +124,19 @@ make up SERVICE=redis-cluster
 # 2. Start Kafka (3 brokers) and Kafka UI
 make up SERVICE=kafka
 
-# 3. Check that all containers are running
+# 3. Start the status page (first time only: installs a 30s refresh timer, asks for sudo)
+make status-page
+
+# 4. See what's up (containers, Redis, Kafka, VM memory/disk)
 make status
 
-# 4. Check cluster health (Redis cluster_state, Kafka quorum)
+# 5. Check cluster health (Redis cluster_state, Kafka quorum)
 make health
 
-# 5. Run the end-to-end test (Redis set/get, Kafka produce/consume)
+# 6. Run the end-to-end test (Redis set/get, Kafka produce/consume)
 make smoke
 ```
-`make up` with no `SERVICE` starts both services in this same order.
+`make up` with no `SERVICE` starts Redis, Kafka and the status page in this order. You need step 3 only once: the timer keeps running across reboots.
 
 Kafka needs about 30–60 seconds to become healthy. If `make health` fails right after starting, wait a minute and run it again.
 
@@ -140,8 +144,79 @@ Kafka needs about 30–60 seconds to become healthy. If `make health` fails righ
 - `redis-cli -c -h <HOST_IP> -p 7001 -a <REDIS_PASSWORD> cluster info`
 - Kafka UI: `http://<HOST_IP>:8080`
 - RedisInsight: `http://<HOST_IP>:5540`
+- Status page: `http://<VM external IP>:8090`. It's public, so it works without Tailscale too.
 
 `HOST_IP` and `REDIS_PASSWORD` are in `~/InfraLab/.env` on the VM: `cat ~/InfraLab/.env`.
+
+---
+
+## See what's up, from any device
+
+### Web status page: any browser, like a normal website
+Open **`http://<VM external IP>:8090`** from any phone, laptop or computer. You don't need Tailscale or a login.
+
+**One-time setup to make it public:**
+1. **Reserve the external IP** so the URL never changes. Console → VPC network → IP addresses → your VM's **External** address → **Promote to static**. Or run:
+   ```bash
+   gcloud compute addresses create infralab-ip --addresses=<current-external-ip> --region=<REGION>
+   ```
+2. **Open port 8090 only**, to the internet, for this VM:
+   ```bash
+   gcloud compute firewall-rules create infralab-status-public \
+     --network=default --direction=INGRESS --action=ALLOW \
+     --rules=tcp:8090 --source-ranges=0.0.0.0/0 --target-tags=infralab-status
+   gcloud compute instances add-tags <VM_NAME> --tags=infralab-status --zone=<ZONE>
+   ```
+3. On the VM, run `make status-page`. It prints the public URL at the end.
+
+To find the external IP on the VM:
+```bash
+curl -s -H "Metadata-Flavor: Google" \
+  http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip
+```
+
+**What is public and what is not:**
+- ✅ **Public:** only the status page on port 8090. It's read-only, nginx serves one static file, it accepts only GET requests, and the container has no access to Docker.
+- 🔒 **Still private:** Redis (7001–7003), Kafka (9092–9094), Kafka UI (8080) and RedisInsight (5540). Kafka UI and RedisInsight have **no login**, so **never** add their ports to a public firewall rule.
+- **Hidden:** the public page leaves out the internal IP and the links to the private UIs (`STATUS_PUBLIC=true` in `.env`). It still shows container names, health and VM stats.
+- The page uses plain HTTP, so there's no padlock in the browser. That's fine here, because it has no password and no private data to protect. If you later want HTTPS or a login, add a domain with Caddy, or use Tailscale Funnel.
+
+**To make it private again:**
+```bash
+gcloud compute firewall-rules delete infralab-status-public
+```
+Then set `STATUS_PUBLIC=false` in `.env`. The page is then reachable only over Tailscale, at `http://<HOST_IP>:8090`.
+
+The page shows:
+- **Overall status:** All systems up / Degraded / Problem detected.
+- **Redis Cluster:** cluster state and how many of the 16384 slots are being served.
+- **Kafka:** how many brokers are healthy (3/3 = ok, 2/3 = still writable, fewer = writes fail).
+- **Every container on the VM**, grouped by project and including your own apps: healthy / starting / unhealthy / stopped, uptime, memory, CPU.
+- **VM:** uptime, load, memory and disk.
+- Links to Kafka UI and RedisInsight.
+
+The page reloads itself every 15 seconds, and the VM regenerates it every 30 seconds. If the page turns red with "not updated for over 2 minutes", the VM or the timer is down.
+
+How it works:
+1. A systemd timer (`infralab-status.timer`) runs `scripts/status.sh --html` on the VM every 30 seconds.
+2. A tiny nginx container (`status-page`, 32 MB) serves the resulting file.
+3. The web container has **no access to Docker**; it only serves a static file.
+
+### In the terminal
+```bash
+# on the VM
+make status
+
+# from your laptop, without opening an SSH session first
+gcloud compute ssh <VM_NAME> --zone=<ZONE> -- -t '~/InfraLab/scripts/status.sh'
+```
+
+### Status page troubleshooting
+```bash
+systemctl list-timers infralab-status.timer      # is the timer scheduled?
+journalctl -u infralab-status.service -n 20      # errors from the last runs
+sudo ./scripts/install-status-timer.sh --remove  # uninstall the timer
+```
 
 ---
 
@@ -160,7 +235,7 @@ make down SERVICE=redis-cluster   # stops redis-1..3 and RedisInsight
 ```bash
 cd ~/InfraLab
 make down
-make status    # should list nothing
+make ps        # should list nothing
 ```
 Start again later with Part B above.
 
@@ -187,11 +262,13 @@ Run `make up` afterwards to get a fresh, empty cluster.
 ## Daily commands (quick reference)
 | Command | What it does |
 |---|---|
-| `make up` | Start everything (Redis, then Kafka) |
+| `make up` | Start everything (Redis, Kafka, status page) |
 | `make up SERVICE=kafka` | Start one service |
 | `make down` | Stop everything, keep data |
 | `make down SERVICE=kafka` | Stop one service, keep data |
-| `make status` | List running containers |
+| `make status` | What's up: containers, Redis, Kafka, VM resources |
+| `make status-page` | Install the refresh timer and start the web status page (once) |
+| `make ps` | Plain `docker ps` list of InfraLab containers |
 | `make health` | Check Redis and Kafka cluster health |
 | `make smoke` | End-to-end test |
 | `make logs SERVICE=kafka` | Follow a service's logs (Ctrl+C to exit) |
@@ -210,7 +287,7 @@ Run `make up` afterwards to get a fresh, empty cluster.
 |---|---|
 | Redis (3 × 384 MB, `maxmemory` 256 MB) | ~1.2 GB |
 | Kafka (3 × 1 GB, heap 512 MB) | ~3 GB |
-| RedisInsight (256 MB) + Kafka UI (384 MB) | ~0.6 GB |
+| RedisInsight (256 MB) + Kafka UI (384 MB) + status page (32 MB) | ~0.7 GB |
 | OS / Docker | ~1.5 GB |
 | **Headroom** | **~9.5 GB** |
 
@@ -231,7 +308,10 @@ Limits are set in `.env` (`REDIS_MAXMEMORY`, `REDIS_MEM_LIMIT`, `KAFKA_HEAP_OPTS
 bootstrap/vm-setup.sh          one-time VM preparation
 services/redis-cluster/        3 master nodes + init job + RedisInsight
 services/kafka/                3 KRaft nodes + Kafka UI
+services/status-page/          nginx serving the generated status page (:8090)
 services/_template/            starting point for new services
+scripts/status.sh              what's up (text, or --html for the web page)
+scripts/install-status-timer.sh  systemd timer that refreshes the page every 30s
 scripts/healthcheck.sh         cluster health
 scripts/smoke-test.sh          end-to-end test
 ```

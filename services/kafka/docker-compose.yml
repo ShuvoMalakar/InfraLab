@@ -67,7 +67,7 @@ services:
     volumes: [kafka-1-data:/var/lib/kafka/data]
     healthcheck:
       <<: *kafka-health
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka-1:29092 >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "KAFKA_HEAP_OPTS=-Xmx128m /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka-1:29092 >/dev/null 2>&1"]
 
   kafka-2:
     <<: *kafka-node
@@ -81,7 +81,7 @@ services:
     volumes: [kafka-2-data:/var/lib/kafka/data]
     healthcheck:
       <<: *kafka-health
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka-2:29092 >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "KAFKA_HEAP_OPTS=-Xmx128m /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka-2:29092 >/dev/null 2>&1"]
 
   kafka-3:
     <<: *kafka-node
@@ -95,7 +95,7 @@ services:
     volumes: [kafka-3-data:/var/lib/kafka/data]
     healthcheck:
       <<: *kafka-health
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka-3:29092 >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "KAFKA_HEAP_OPTS=-Xmx128m /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka-3:29092 >/dev/null 2>&1"]
 
   # Web UI on :8080 — reach it over Tailscale only.
   kafka-ui:
