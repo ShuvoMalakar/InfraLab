@@ -4,7 +4,7 @@ set -eu
 : "${HOST_IP:?}"
 
 NODES=""
-for p in 7001 7002 7003 7004 7005 7006; do NODES="$NODES ${HOST_IP}:$p"; done
+for p in 7001 7002 7003; do NODES="$NODES ${HOST_IP}:$p"; done
 
 state=$(redis-cli -h "$HOST_IP" -p 7001 cluster info | tr -d '\r' | awk -F: '/^cluster_state/{print $2}')
 slots=$(redis-cli -h "$HOST_IP" -p 7001 cluster info | tr -d '\r' | awk -F: '/^cluster_slots_assigned/{print $2}')
@@ -22,7 +22,7 @@ fi
 
 echo "Creating cluster:$NODES"
 # shellcheck disable=SC2086
-redis-cli --cluster create $NODES --cluster-replicas 1 --cluster-yes
+redis-cli --cluster create $NODES --cluster-replicas 0 --cluster-yes
 
 echo "Waiting for cluster_state:ok ..."
 i=0

@@ -16,6 +16,9 @@ dir /data
 cluster-enabled yes
 cluster-config-file nodes.conf
 cluster-node-timeout 5000
+# No replicas: if one master dies, keep serving the other masters' slots
+# instead of failing the whole cluster.
+cluster-require-full-coverage no
 cluster-port ${BUS_PORT}
 cluster-announce-ip ${HOST_IP}
 cluster-announce-port ${NODE_PORT}

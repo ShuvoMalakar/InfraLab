@@ -8,7 +8,7 @@ set -a; . ./.env; set +a
 echo "== Redis: write/read keys that hash to different shards"
 for k in user:1 order:42 session:abc cart:7 product:99; do
   docker exec redis-1 redis-cli -c -h "$HOST_IP" -p 7001 SET "smoke:$k" "v-$k" >/dev/null
-  v=$(docker exec redis-1 redis-cli -c -h "$HOST_IP" -p 7004 GET "smoke:$k" | tr -d '\r')
+  v=$(docker exec redis-1 redis-cli -c -h "$HOST_IP" -p 7002 GET "smoke:$k" | tr -d '\r')
   slot=$(docker exec redis-1 redis-cli -h "$HOST_IP" -p 7001 CLUSTER KEYSLOT "smoke:$k" | tr -d '\r')
   [ "$v" = "v-$k" ] || { echo "FAIL $k"; exit 1; }
   echo "  ok  smoke:$k  slot=$slot"

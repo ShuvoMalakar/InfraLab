@@ -4,12 +4,12 @@ Shared infrastructure that runs on one GCP Ubuntu VM in Docker. Your other proje
 
 | Service | Topology | Ports |
 |---|---|---|
-| Redis Cluster | 3 masters + 3 replicas (sharded, automatic failover) | 7001–7006 (client), 17001–17006 (cluster bus) |
+| Redis Cluster | 3 masters, no replicas (sharded, no failover) | 7001–7003 (client), 17001–17003 (cluster bus) |
 | Kafka (KRaft) | 3 nodes, each both broker and controller; RF=3, min.insync=2 | 9092–9094 (external), 29092 (internal) |
 | RedisInsight | web UI | 5540 |
 | Kafka UI (kafbat) | web UI | 8080 |
 
-> This is a lab setup. All nodes share one VM, so you get real sharding, replication and failover between nodes, but nothing survives the VM itself going down.
+> This is a lab setup. All nodes share one VM, so you get real Redis sharding and Kafka replication/failover between nodes, but nothing survives the VM itself going down.
 
 ---
 
@@ -68,51 +68,139 @@ networks:
 
 ---
 
-## First-time setup
+## How to START everything (step by step)
 
-### 1. GCP (one time)
-- **Static internal IP:** reserve the VM's internal IP as static. It is baked into the Redis cluster state and the Kafka metadata.
-- **Firewall rule:** allow TCP `7001-7006,9092-9094` **only** from your VPC CIDR and your GKE node/pod ranges:
-  ```bash
-  gcloud compute firewall-rules create infralab-internal \
-    --network=default --direction=INGRESS --action=ALLOW \
-    --rules=tcp:7001-7006,tcp:9092-9094 \
-    --source-ranges=10.128.0.0/9 --target-tags=infralab
-  gcloud compute instances add-tags <VM_NAME> --tags=infralab --zone=<ZONE>
-  ```
-- **Public internet:** open nothing beyond SSH. Reach the UIs and data ports from your laptop over Tailscale.
+### Part A: First time only (do once)
 
-### 2. On the VM
+**Step 1. GCP console / gcloud, from your laptop**
+1. Make the VM's internal IP **static**: VPC network → IP addresses → your VM's internal IP → **Promote to static**. Redis and Kafka store this IP, so it must never change.
+2. Create the firewall rule. It allows the Redis and Kafka ports **only from inside your VPC**:
+   ```bash
+   gcloud compute firewall-rules create infralab-internal \
+     --network=default --direction=INGRESS --action=ALLOW \
+     --rules=tcp:7001-7003,tcp:9092-9094 \
+     --source-ranges=10.128.0.0/9 --target-tags=infralab
+   gcloud compute instances add-tags <VM_NAME> --tags=infralab --zone=<ZONE>
+   ```
+3. Do **not** open any of these ports to the public internet. Only SSH stays public.
+
+**Step 2. SSH into the VM and clone the repo**
 ```bash
-git clone <this repo> ~/InfraLab && cd ~/InfraLab
-sudo ./bootstrap/vm-setup.sh                         # Docker, sysctl, THP, Tailscale, .env
-sudo tailscale up --advertise-routes=10.128.0.0/20   # your VPC subnet; approve it in the Tailscale admin
-# log out and back in so the docker group applies
-make up        # starts redis-cluster, then kafka
-make health
-make smoke
+git clone https://<github-user>@github.com/ShuvoMalakar/InfraLab.git ~/InfraLab
+cd ~/InfraLab
 ```
 
-### 3. On your laptop
-Install Tailscale, log in to the same tailnet, and turn on accepting routes (`tailscale up --accept-routes` on Linux; macOS accepts routes by default in the app). After that, `HOST_IP` works from the laptop:
-- `redis-cli -c -h HOST_IP -p 7001 -a <pw> cluster info`
-- Kafka UI: `http://HOST_IP:8080`
-- RedisInsight: `http://HOST_IP:5540`
+**Step 3. Run the VM setup script**
+```bash
+sudo ./bootstrap/vm-setup.sh
+```
+This installs Docker and Tailscale, tunes the kernel, creates the `infra-net` network, and writes `.env` with `HOST_IP`, a Redis password and the Kafka cluster ID.
+
+**Step 4. Log out and SSH back in**, so your user can run `docker` without `sudo`.
+```bash
+exit
+# then SSH into the VM again
+docker ps        # must work without sudo
+```
+
+**Step 5. Connect the VM to Tailscale** (needed only for laptop access)
+```bash
+sudo tailscale up --advertise-routes=10.128.0.0/20   # use your own VPC subnet range
+```
+Open the login link it prints. Then, at https://login.tailscale.com/admin/machines, find the VM, click **…**, choose **Edit route settings**, and approve the subnet.
+
+**Step 6. On your laptop:** install Tailscale (`brew install --cask tailscale`) and log in with the **same** Tailscale account.
+
+### Part B: Start the services (first time, and any time after stopping)
+
+Run these on the VM, in this order:
+```bash
+cd ~/InfraLab
+
+# 1. Start Redis Cluster (3 masters). The init job forms the cluster on first run.
+make up SERVICE=redis-cluster
+
+# 2. Start Kafka (3 brokers) and Kafka UI
+make up SERVICE=kafka
+
+# 3. Check that all containers are running
+make status
+
+# 4. Check cluster health (Redis cluster_state, Kafka quorum)
+make health
+
+# 5. Run the end-to-end test (Redis set/get, Kafka produce/consume)
+make smoke
+```
+`make up` with no `SERVICE` starts both services in this same order.
+
+Kafka needs about 30–60 seconds to become healthy. If `make health` fails right after starting, wait a minute and run it again.
+
+**Check from your laptop** (Tailscale must be connected):
+- `redis-cli -c -h <HOST_IP> -p 7001 -a <REDIS_PASSWORD> cluster info`
+- Kafka UI: `http://<HOST_IP>:8080`
+- RedisInsight: `http://<HOST_IP>:5540`
+
+`HOST_IP` and `REDIS_PASSWORD` are in `~/InfraLab/.env` on the VM: `cat ~/InfraLab/.env`.
 
 ---
 
-## Operations
+## How to STOP everything
+
+Pick the level you need. Levels 1–3 **keep your data**. Level 4 **deletes it**.
+
+**Level 1: Stop one service** (data kept)
 ```bash
-make up | down [SERVICE=kafka]   # start/stop all or one (data is kept)
-make status                      # containers on infra-net
-make logs SERVICE=redis-cluster
-make health                      # cluster state, quorum, under-replicated partitions
-make smoke                       # end-to-end test through HOST_IP
-make nuke SERVICE=kafka          # stop and DELETE the service's volumes
+cd ~/InfraLab
+make down SERVICE=kafka           # stops kafka-1..3 and Kafka UI
+make down SERVICE=redis-cluster   # stops redis-1..3 and RedisInsight
 ```
 
+**Level 2: Stop all services** (data kept)
+```bash
+cd ~/InfraLab
+make down
+make status    # should list nothing
+```
+Start again later with Part B above.
+
+**Level 3: Stop the whole VM to save GCP cost** (data kept)
+```bash
+cd ~/InfraLab && make down        # on the VM first, so everything shuts down cleanly
+gcloud compute instances stop <VM_NAME> --zone=<ZONE>    # from your laptop, or use the GCP console
+```
+After you start the VM again, SSH in and run Part B.
+
+If you stop or reboot the VM **without** running `make down` first, the containers start again automatically at boot (`restart: unless-stopped`).
+
+**Level 4: Delete everything, including all data** ⚠️ cannot be undone
+```bash
+cd ~/InfraLab
+make nuke SERVICE=kafka            # asks y/N, then deletes Kafka topics and messages
+make nuke SERVICE=redis-cluster    # asks y/N, then deletes all Redis keys
+docker network rm infra-net        # optional: remove the shared network too
+```
+Run `make up` afterwards to get a fresh, empty cluster.
+
+---
+
+## Daily commands (quick reference)
+| Command | What it does |
+|---|---|
+| `make up` | Start everything (Redis, then Kafka) |
+| `make up SERVICE=kafka` | Start one service |
+| `make down` | Stop everything, keep data |
+| `make down SERVICE=kafka` | Stop one service, keep data |
+| `make status` | List running containers |
+| `make health` | Check Redis and Kafka cluster health |
+| `make smoke` | End-to-end test |
+| `make logs SERVICE=kafka` | Follow a service's logs (Ctrl+C to exit) |
+| `make pull` | Download newer images, after changing versions in `.env` |
+| `git pull && make up` | Apply changes pushed from your laptop |
+| `make nuke SERVICE=<name>` | ⚠️ Stop **and delete all data** of a service |
+
 **Failover drills:**
-- **Redis:** `docker stop redis-1`. Within about 5 seconds, `cluster nodes` shows its replica promoted. Then run `docker start redis-1`, and it rejoins as a replica.
+- **Redis:** there are no replicas, so stopping a node (`docker stop redis-1`) makes the keys in its slots unavailable. The other two masters keep serving their keys (`cluster-require-full-coverage no`). When you run `docker start redis-1`, it comes back with its data from its AOF file.
 - **Kafka:** `docker stop kafka-2`. Producing with `acks=all` keeps working. Then run `docker start kafka-2`.
 
 **If `HOST_IP` ever changes**, the Redis cluster state goes stale. Either run `make nuke SERVICE=redis-cluster && make up SERVICE=redis-cluster`, or avoid the problem by using a static internal IP.
@@ -120,11 +208,11 @@ make nuke SERVICE=kafka          # stop and DELETE the service's volumes
 ## Memory budget (16 GB VM)
 | Component | Limit |
 |---|---|
-| Redis (6 × 384 MB, `maxmemory` 256 MB) | ~2.3 GB |
+| Redis (3 × 384 MB, `maxmemory` 256 MB) | ~1.2 GB |
 | Kafka (3 × 1 GB, heap 512 MB) | ~3 GB |
 | RedisInsight (256 MB) + Kafka UI (384 MB) | ~0.6 GB |
 | OS / Docker | ~1.5 GB |
-| **Headroom** | **~8.5 GB** |
+| **Headroom** | **~9.5 GB** |
 
 Limits are set in `.env` (`REDIS_MAXMEMORY`, `REDIS_MEM_LIMIT`, `KAFKA_HEAP_OPTS`, `KAFKA_MEM_LIMIT`). Keep each container limit about 1.5–2× the Redis `maxmemory` or the Kafka heap, so there's room for overhead.
 
@@ -141,7 +229,7 @@ Limits are set in `.env` (`REDIS_MAXMEMORY`, `REDIS_MEM_LIMIT`, `KAFKA_HEAP_OPTS
 ## Layout
 ```
 bootstrap/vm-setup.sh          one-time VM preparation
-services/redis-cluster/        6 nodes + init job + RedisInsight
+services/redis-cluster/        3 master nodes + init job + RedisInsight
 services/kafka/                3 KRaft nodes + Kafka UI
 services/_template/            starting point for new services
 scripts/healthcheck.sh         cluster health

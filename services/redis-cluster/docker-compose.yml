@@ -1,4 +1,4 @@
-# Redis Cluster: 3 masters + 3 replicas.
+# Redis Cluster: 3 masters, no replicas (sharding only, no failover).
 # Every node announces ${HOST_IP}:700N, so the slot map and MOVED redirects
 # work for clients on this VM, in the VPC, and over Tailscale.
 # Node config is rendered by start-node.sh from env vars.
@@ -41,30 +41,6 @@ services:
     volumes: ["redis-3-data:/data", "./start-node.sh:/start-node.sh:ro"]
     healthcheck: { test: ["CMD", "redis-cli", "-p", "7003", "ping"], interval: 5s, timeout: 3s, retries: 10 }
 
-  redis-4:
-    <<: *redis-node
-    container_name: redis-4
-    environment: { <<: *redis-env, NODE_PORT: "7004" }
-    ports: ["7004:7004", "17004:17004"]
-    volumes: ["redis-4-data:/data", "./start-node.sh:/start-node.sh:ro"]
-    healthcheck: { test: ["CMD", "redis-cli", "-p", "7004", "ping"], interval: 5s, timeout: 3s, retries: 10 }
-
-  redis-5:
-    <<: *redis-node
-    container_name: redis-5
-    environment: { <<: *redis-env, NODE_PORT: "7005" }
-    ports: ["7005:7005", "17005:17005"]
-    volumes: ["redis-5-data:/data", "./start-node.sh:/start-node.sh:ro"]
-    healthcheck: { test: ["CMD", "redis-cli", "-p", "7005", "ping"], interval: 5s, timeout: 3s, retries: 10 }
-
-  redis-6:
-    <<: *redis-node
-    container_name: redis-6
-    environment: { <<: *redis-env, NODE_PORT: "7006" }
-    ports: ["7006:7006", "17006:17006"]
-    volumes: ["redis-6-data:/data", "./start-node.sh:/start-node.sh:ro"]
-    healthcheck: { test: ["CMD", "redis-cli", "-p", "7006", "ping"], interval: 5s, timeout: 3s, retries: 10 }
-
   # One-shot: forms the cluster on first boot, no-op afterwards.
   redis-cluster-init:
     image: ${REDIS_IMAGE}
@@ -80,9 +56,6 @@ services:
       redis-1: { condition: service_healthy }
       redis-2: { condition: service_healthy }
       redis-3: { condition: service_healthy }
-      redis-4: { condition: service_healthy }
-      redis-5: { condition: service_healthy }
-      redis-6: { condition: service_healthy }
 
   # Web UI on :5540 — reach it over Tailscale only. Add the cluster with
   # host=${HOST_IP} port=7001 password=${REDIS_PASSWORD}.
@@ -103,7 +76,4 @@ volumes:
   redis-1-data:
   redis-2-data:
   redis-3-data:
-  redis-4-data:
-  redis-5-data:
-  redis-6-data:
   redisinsight-data:

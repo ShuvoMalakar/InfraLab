@@ -19,17 +19,17 @@ check-env:
 	@docker network inspect infra-net >/dev/null 2>&1 || docker network create infra-net >/dev/null
 
 up: check-env
-	@for s in $(TARGETS); do echo "==> up $$s"; $(call compose,$$s) up -d || exit 1; done
+	@for s in $(TARGETS); do echo "==> up $$s"; $(call compose,$$s) up -d --remove-orphans || exit 1; done
 
 down: check-env
-	@for s in $(TARGETS); do echo "==> down $$s"; $(call compose,$$s) down; done
+	@for s in $(TARGETS); do echo "==> down $$s"; $(call compose,$$s) down --remove-orphans; done
 
 restart: down up
 
 nuke: check-env
 	@test -n "$(SERVICE)" || { echo "nuke requires SERVICE=<name>"; exit 1; }
 	@read -p "Delete ALL data volumes of $(SERVICE)? [y/N] " a; [ "$$a" = "y" ] || exit 1
-	$(call compose,$(SERVICE)) down -v
+	$(call compose,$(SERVICE)) down -v --remove-orphans
 
 pull: check-env
 	@for s in $(TARGETS); do $(call compose,$$s) pull; done

@@ -14,8 +14,8 @@ grep -q 'cluster_state:ok' <<<"$info" && ok "cluster_state:ok" || fail "cluster_
 size=$(awk -F: '/^cluster_size/{print $2}' <<<"$info")
 [ "$size" = "3" ] && ok "3 masters own slots" || fail "cluster_size=$size (want 3)"
 nodes=$(docker exec redis-1 redis-cli -p 7001 cluster nodes 2>/dev/null)
-m=$(grep -c 'master' <<<"$nodes" || true); r=$(grep -c 'slave' <<<"$nodes" || true)
-echo "       masters=$m replicas=$r"
+m=$(grep -c 'master' <<<"$nodes" || true)
+[ "$m" = "3" ] && ok "3 master nodes" || fail "masters=$m (want 3)"
 grep -q 'fail' <<<"$nodes" && fail "some node is flagged fail" || ok "no failed nodes"
 
 echo "Kafka"
