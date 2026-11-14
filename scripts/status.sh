@@ -77,6 +77,18 @@ else                        KAFKA_LVL=bad;  KAFKA_MSG="$kh/$kt brokers healthy (
 fi
 bump "$KAFKA_LVL"
 
+# Cassandra summary: only shown once the service has been started at least once
+CASS_LVL=""; CASS_MSG=""
+ct=$(grep -cE '^cassandra\|cassandra-[0-9]+\|' <<<"$ROWS" || true)
+if [ "$ct" -gt 0 ]; then
+  ch=$(grep -cE '^cassandra\|cassandra-[0-9]+\|running\|.*\(healthy\)' <<<"$ROWS" || true)
+  if   [ "$ch" -ge 3 ]; then CASS_LVL=ok;   CASS_MSG="$ch/$ct nodes healthy"
+  elif [ "$ch" -eq 2 ]; then CASS_LVL=warn; CASS_MSG="$ch/$ct nodes healthy (QUORUM still works with RF=3)"
+  else                       CASS_LVL=bad;  CASS_MSG="$ch/$ct nodes healthy (QUORUM reads/writes FAIL)"
+  fi
+  bump "$CASS_LVL"
+fi
+
 # VM resources
 SYS_UP=$(uptime -p 2>/dev/null || echo "?")
 SYS_LOAD=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || echo "?")
@@ -101,6 +113,7 @@ render_text() {
   printf '\n%sClusters%s\n' "$B" "$N"
   printf '  %s Redis Cluster  %s\n' "$(dot "$REDIS_LVL")" "$REDIS_MSG"
   printf '  %s Kafka          %s\n' "$(dot "$KAFKA_LVL")" "$KAFKA_MSG"
+  [ -n "$CASS_LVL" ] && printf '  %s Cassandra      %s\n' "$(dot "$CASS_LVL")" "$CASS_MSG"
 
   local last=""
   while IFS='|' read -r proj name state status; do
@@ -165,8 +178,9 @@ h1{font-size:20px;margin:0}h2{font-size:13px;text-transform:uppercase;letter-spa
 <div class="card">
   <div class="sum"><span class="dot $REDIS_LVL"></span><b>Redis Cluster</b><span>$(esc "$REDIS_MSG")</span></div>
   <div class="sum"><span class="dot $KAFKA_LVL"></span><b>Kafka</b><span>$(esc "$KAFKA_MSG")</span></div>
-</div>
 EOF
+  [ -n "$CASS_LVL" ] && echo "  <div class=\"sum\"><span class=\"dot $CASS_LVL\"></span><b>Cassandra</b><span>$(esc "$CASS_MSG")</span></div>"
+  echo "</div>"
 
   local last="" open=0
   while IFS='|' read -r proj name state status; do

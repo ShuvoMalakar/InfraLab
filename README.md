@@ -6,6 +6,7 @@ Shared infrastructure that runs on one GCP Ubuntu VM in Docker. Your other proje
 |---|---|---|
 | Redis Cluster | 3 masters, no replicas (sharded, no failover) | 7001–7003 (client), 17001–17003 (cluster bus) |
 | Kafka (KRaft) | 3 nodes, each both broker and controller; RF=3, min.insync=2 | 9092–9094 (external), 29092 (internal) |
+| Cassandra | 3 nodes, 1 datacenter (`dc1`), use RF=3 + QUORUM | 9042–9044 (CQL, one port per node) |
 | RedisInsight | web UI | 5540 |
 | Kafka UI (kafbat) | web UI | 8080 |
 | Status page | what's up: **public**, read-only, any browser | 8090 |
@@ -56,6 +57,33 @@ docker exec kafka-1 /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-1:29
 ```
 Producers should set `acks=all`. With `min.insync.replicas=2`, writes keep working while one broker is down.
 
+### Cassandra
+| Where the app runs | Contact points | Local DC |
+|---|---|---|
+| Anywhere: VM container, other GCP VM / GKE, laptop over Tailscale | `HOST_IP:9042` (add `:9043`, `:9044` as backups) | `dc1` |
+
+All 3 nodes share one IP and use **different ports** (9042, 9043, 9044). Use a driver that reads `system.peers_v2`, so it discovers the other two ports by itself: DataStax Java driver 4.x, Python `cassandra-driver` 3.25+, gocql, or the Node.js `cassandra-driver`. An older driver still works, but it may send every request through node 1.
+
+```python
+# Python
+from cassandra.cluster import Cluster
+cluster = Cluster([HOST_IP], port=9042)
+session = cluster.connect()
+```
+```java
+// Java (DataStax driver 4.x)
+CqlSession.builder()
+  .addContactPoint(new InetSocketAddress(HOST_IP, 9042))
+  .withLocalDatacenter("dc1").build();
+```
+Create keyspaces with RF=3 and use `QUORUM` (or `LOCAL_QUORUM`). Reads and writes then keep working while one node is down:
+```sql
+CREATE KEYSPACE myapp WITH replication = {'class': 'NetworkTopologyStrategy', 'dc1': 3};
+```
+Open a CQL shell on the VM: `docker exec -it cassandra-1 cqlsh`
+
+There's no login yet: authentication is off, as for Kafka. The ports are reachable only inside your VPC and over Tailscale.
+
 ### App container on the same VM
 ```yaml
 # in your project's docker-compose.yml
@@ -74,12 +102,12 @@ networks:
 ### Part A: First time only (do once)
 
 **Step 1. GCP console / gcloud, from your laptop**
-1. Make the VM's internal IP **static**: VPC network → IP addresses → your VM's internal IP → **Promote to static**. Redis and Kafka store this IP, so it must never change.
-2. Create the firewall rule. It allows the Redis and Kafka ports **only from inside your VPC**:
+1. Make the VM's internal IP **static**: VPC network → IP addresses → your VM's internal IP → **Promote to static**. Redis, Kafka and Cassandra store this IP, so it must never change.
+2. Create the firewall rule. It allows the Redis, Kafka and Cassandra ports **only from inside your VPC**. You can skip this if your VM is on the `default` network: its built-in `default-allow-internal` rule already allows this traffic.
    ```bash
    gcloud compute firewall-rules create infralab-internal \
      --network=default --direction=INGRESS --action=ALLOW \
-     --rules=tcp:7001-7003,tcp:9092-9094 \
+     --rules=tcp:7001-7003,tcp:9092-9094,tcp:9042-9044 \
      --source-ranges=10.128.0.0/9 --target-tags=infralab
    gcloud compute instances add-tags <VM_NAME> --tags=infralab --zone=<ZONE>
    ```
@@ -124,19 +152,22 @@ make up SERVICE=redis-cluster
 # 2. Start Kafka (3 brokers) and Kafka UI
 make up SERVICE=kafka
 
-# 3. Start the status page (first time only: installs a 30s refresh timer, asks for sudo)
+# 3. Start Cassandra (3 nodes). They join one at a time: this takes about 3-5 minutes.
+make up SERVICE=cassandra
+
+# 4. Start the status page (first time only: installs a 30s refresh timer, asks for sudo)
 make status-page
 
-# 4. See what's up (containers, Redis, Kafka, VM memory/disk)
+# 5. See what's up (containers, Redis, Kafka, Cassandra, VM memory/disk)
 make status
 
-# 5. Check cluster health (Redis cluster_state, Kafka quorum)
+# 6. Check cluster health (Redis cluster_state, Kafka quorum, Cassandra ring)
 make health
 
-# 6. Run the end-to-end test (Redis set/get, Kafka produce/consume)
+# 7. Run the end-to-end test (Redis set/get, Kafka produce/consume, Cassandra write/read)
 make smoke
 ```
-`make up` with no `SERVICE` starts Redis, Kafka and the status page in this order. You need step 3 only once: the timer keeps running across reboots.
+`make up` with no `SERVICE` starts Redis, Kafka, Cassandra and the status page in this order. You need step 3 only once: the timer keeps running across reboots.
 
 Kafka needs about 30–60 seconds to become healthy. If `make health` fails right after starting, wait a minute and run it again.
 
@@ -262,14 +293,14 @@ Run `make up` afterwards to get a fresh, empty cluster.
 ## Daily commands (quick reference)
 | Command | What it does |
 |---|---|
-| `make up` | Start everything (Redis, Kafka, status page) |
+| `make up` | Start everything (Redis, Kafka, Cassandra, status page) |
 | `make up SERVICE=kafka` | Start one service |
 | `make down` | Stop everything, keep data |
 | `make down SERVICE=kafka` | Stop one service, keep data |
-| `make status` | What's up: containers, Redis, Kafka, VM resources |
+| `make status` | What's up: containers, Redis, Kafka, Cassandra, VM resources |
 | `make status-page` | Install the refresh timer and start the web status page (once) |
 | `make ps` | Plain `docker ps` list of InfraLab containers |
-| `make health` | Check Redis and Kafka cluster health |
+| `make health` | Check Redis, Kafka and Cassandra cluster health |
 | `make smoke` | End-to-end test |
 | `make logs SERVICE=kafka` | Follow a service's logs (Ctrl+C to exit) |
 | `make pull` | Download newer images, after changing versions in `.env` |
@@ -279,6 +310,7 @@ Run `make up` afterwards to get a fresh, empty cluster.
 **Failover drills:**
 - **Redis:** there are no replicas, so stopping a node (`docker stop redis-1`) makes the keys in its slots unavailable. The other two masters keep serving their keys (`cluster-require-full-coverage no`). When you run `docker start redis-1`, it comes back with its data from its AOF file.
 - **Kafka:** `docker stop kafka-2`. Producing with `acks=all` keeps working. Then run `docker start kafka-2`.
+- **Cassandra:** `docker stop cassandra-2`. `QUORUM` reads and writes keep working, because 2 of the 3 replicas are still up. `nodetool status` shows the stopped node as `DN`. Then run `docker start cassandra-2`; it catches up through hinted handoff.
 
 **If `HOST_IP` ever changes**, the Redis cluster state goes stale. Either run `make nuke SERVICE=redis-cluster && make up SERVICE=redis-cluster`, or avoid the problem by using a static internal IP.
 
@@ -287,11 +319,12 @@ Run `make up` afterwards to get a fresh, empty cluster.
 |---|---|
 | Redis (3 × 384 MB, `maxmemory` 256 MB) | ~1.2 GB |
 | Kafka (3 × 1 GB, heap 512 MB) | ~3 GB |
+| Cassandra (3 × 1.25 GB, heap 512 MB) | ~3.75 GB |
 | RedisInsight (256 MB) + Kafka UI (384 MB) + status page (32 MB) | ~0.7 GB |
 | OS / Docker | ~1.5 GB |
-| **Headroom** | **~9.5 GB** |
+| **Headroom** | **~5.8 GB** |
 
-Limits are set in `.env` (`REDIS_MAXMEMORY`, `REDIS_MEM_LIMIT`, `KAFKA_HEAP_OPTS`, `KAFKA_MEM_LIMIT`). Keep each container limit about 1.5–2× the Redis `maxmemory` or the Kafka heap, so there's room for overhead.
+Limits are set in `.env` (`REDIS_MAXMEMORY`, `REDIS_MEM_LIMIT`, `KAFKA_HEAP_OPTS`, `KAFKA_MEM_LIMIT`, `CASSANDRA_MAX_HEAP`, `CASSANDRA_HEAP_NEWSIZE`, `CASSANDRA_MEM_LIMIT`). Keep each container limit about 1.5–2.5× the Redis `maxmemory` or the Java heap, so there's room for overhead. Cassandra uses a lot of memory outside its heap.
 
 ## Adding a new technology
 1. Run `cp -r services/_template services/<name>` and follow the steps in its header.
@@ -308,6 +341,7 @@ Limits are set in `.env` (`REDIS_MAXMEMORY`, `REDIS_MEM_LIMIT`, `KAFKA_HEAP_OPTS
 bootstrap/vm-setup.sh          one-time VM preparation
 services/redis-cluster/        3 master nodes + init job + RedisInsight
 services/kafka/                3 KRaft nodes + Kafka UI
+services/cassandra/            3 Cassandra nodes (dc1)
 services/status-page/          nginx serving the generated status page (:8090)
 services/_template/            starting point for new services
 scripts/status.sh              what's up (text, or --html for the web page)

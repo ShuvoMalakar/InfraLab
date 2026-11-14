@@ -29,4 +29,19 @@ got=$(docker exec -e KAFKA_HEAP_OPTS=-Xmx128m kafka-1 $K/kafka-console-consumer.
   --topic smoke-test --from-beginning --timeout-ms 15000 2>/dev/null | grep -c "$MSG" || true)
 [ "$got" -ge 1 ] && echo "  ok  consumed $MSG" || { echo "FAIL: message not consumed"; exit 1; }
 
+if docker ps --format '{{.Names}}' | grep -q '^cassandra-1$'; then
+  echo "== Cassandra: write via node 1 (:9042), read via node 3 (:9044), RF=3, QUORUM"
+  CQ="cassandra-$(date +%s)"
+  docker exec cassandra-1 cqlsh "$HOST_IP" 9042 -e "
+    CREATE KEYSPACE IF NOT EXISTS infralab_smoke
+      WITH replication = {'class': 'NetworkTopologyStrategy', 'dc1': 3};
+    CREATE TABLE IF NOT EXISTS infralab_smoke.kv (id text PRIMARY KEY, v text);
+    CONSISTENCY QUORUM;
+    INSERT INTO infralab_smoke.kv (id, v) VALUES ('smoke', '$CQ');" >/dev/null
+  got=$(docker exec cassandra-1 cqlsh "$HOST_IP" 9044 -e "
+    CONSISTENCY QUORUM;
+    SELECT v FROM infralab_smoke.kv WHERE id = 'smoke';" | grep -c "$CQ" || true)
+  [ "$got" -ge 1 ] && echo "  ok  read back $CQ" || { echo "FAIL: Cassandra value not read back"; exit 1; }
+fi
+
 echo "All smoke tests passed."

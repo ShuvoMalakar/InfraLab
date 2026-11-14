@@ -25,11 +25,11 @@ apt-get install -y make openssl >/dev/null
 usermod -aG docker "$TARGET_USER"
 systemctl enable --now docker
 
-echo "==> 2/6 Kernel settings (Redis + Kafka)"
+echo "==> 2/6 Kernel settings (Redis + Kafka + Cassandra)"
 cat > /etc/sysctl.d/99-infralab.conf <<'EOF'
 vm.overcommit_memory = 1
 net.core.somaxconn = 1024
-vm.max_map_count = 262144
+vm.max_map_count = 1048575
 vm.swappiness = 1
 EOF
 sysctl --system >/dev/null

@@ -35,4 +35,12 @@ urp=$(docker exec -e KAFKA_HEAP_OPTS=-Xmx128m kafka-1 /opt/kafka/bin/kafka-topic
   --describe --under-replicated-partitions 2>/dev/null | grep -c 'Topic:' || true)
 [ "$urp" = "0" ] && ok "no under-replicated partitions" || fail "$urp under-replicated partitions"
 
+if docker ps -a --format '{{.Names}}' | grep -q '^cassandra-1$'; then
+  echo "Cassandra"
+  ring=$(docker exec -e MAX_HEAP_SIZE=128m -e HEAP_NEWSIZE=32m cassandra-1 nodetool status 2>/dev/null)
+  un=$(grep -c '^UN' <<<"$ring" || true)
+  [ "$un" = "3" ] && ok "3/3 nodes Up/Normal" || fail "$un/3 nodes Up/Normal"
+  grep -E '^[UD][NLJM] ' <<<"$ring" | awk '{printf "       %s %s load=%s %s\n", $1, $2, $3, $4}'
+fi
+
 exit $FAILED

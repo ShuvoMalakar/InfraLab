@@ -7,7 +7,7 @@
 #   make status-page            # install the 30s timer + start the web status page (:8090)
 #   make ps | logs SERVICE=kafka | health | smoke
 
-SERVICES := redis-cluster kafka status-page
+SERVICES := redis-cluster kafka cassandra status-page
 SERVICE  ?=
 TARGETS  := $(if $(SERVICE),$(SERVICE),$(SERVICES))
 ENV_FILE := $(CURDIR)/.env
